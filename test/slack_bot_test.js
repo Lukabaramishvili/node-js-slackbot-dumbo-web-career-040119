@@ -1,118 +1,86 @@
 "use strict";
 
-const chai = require('chai');
-const expect = require('unexpected');
-const request = require('supertest');
-const server = require('../slack_bot');
-const baseUrl = 'http://localhost:3000';
+const rp = require('request-promise');
+const express = require('express');
+const bodyParser = require('body-parser');
+const app = express();
 
-const transformData = (obj) => {
-  var str = [];
-  for(var p in obj)
-  str.push(encodeURIComponent(p) + "=" + encodeURIComponent(obj[p]));
-  return str.join("&");
+app.use(bodyParser.urlencoded({ extended: true }));
+
+const TOKEN = '8cVJhp6TA0fU1gEsFawEussX';
+
+const validRequest = (token) => {
+  return TOKEN == token;
 };
 
-const clone = (obj) => {
-  return JSON.parse(JSON.stringify(obj));
+const fetchGithubUser = (username) => {
+  const url =  'https://api.github.com/users/' + username;
+  return rp({
+    uri: url,
+    headers: {
+        'User-Agent': 'Flatiron-Slackbot-Lab'
+    },
+  });
 };
 
-let mockSlackPostData = {
-  token: '8cVJhp6TA0fU1gEsFawEussX',
-  team_id: 'T02KU9PH6',
-  team_domain: 'codecuts',
-  channel_id: 'C02KU9PJJ',
-  channel_name: 'general',
-  user_id: 'U02KU9PHE',
-  user_name: 'ethan',
-  command: '/github',
-  response_url: 'https://hooks.slack.com/commands/T02KU9PH6/41072273780/lodzbFlyr5UaQuev3NkHJYAN' };
+const prepareResponse = (info, paramToGet) => {
+  let rv = { response_type: "ephemeral", mrkdwn: true };
+  const EOL = '\n';
+  rv.text = '*Github User: @' + info.login + ' (' + info.name + ')*:' + EOL;
+  if (!paramToGet) {
+    rv.text += '> Company: ' + info.company + EOL;
+    rv.text += '> Location: ' + info.location + EOL;
+    rv.text += '> Hireable: ' + info.hireable + EOL;
+    rv.text += '> Githup Profile: ' + info.html_url + EOL;
+  }
+  else {
+    rv.text += '> ' + paramToGet.charAt(0).toUpperCase() + paramToGet.slice(1) + ': ';
+    rv.text += info[paramToGet];
+  }
+  return rv;
+};
 
-describe('server', () => {
+app.get('/', (req,res) => {
+  res.send('ok');
+});
 
-  before(() => {
-    server.listen(3000);
-  });
-
-  it('GET request to / responds with status 200', (done) => {
-    request(baseUrl)
-      .get('/')
-      .expect(200, done);
-  });
-
-  it('POST to / with invalid token returns 400', (done) => {
-    let data = clone(mockSlackPostData);
-    data.token = '111111111111111';
-    request(baseUrl)
-      .post('/')
-      .set('Accept', 'application/x-www-form-urlencoded')
-      .send(transformData(data))
-      .expect(400,done);
-  });
-
-  it('POST to / for existent user returns correctly ', (done) => {
-    let data = clone(mockSlackPostData);
-    data.text = 'flatiron-school';
-    request(baseUrl)
-      .post('/')
-      .set('Accept', 'application/x-www-form-urlencoded')
-      .send(transformData(data))
-      .expect(200)
-      .end((err, resp) => {
-        const respObj = JSON.parse(resp.text);
-        expect(respObj, 'to have key', 'text');
-        expect(respObj.text, 'to contain', 'flatiron-school');
-        expect(respObj.text, 'to contain', 'https://github.com/flatiron-school');
-        done();
-      });
-  });
-
-  it('POST to / with nonexistent user specified returns 404 code and msg', (done) => {
-    let data = clone(mockSlackPostData);
-    data.text = '76ytjf0';
-    request(baseUrl)
-      .post('/')
-      .set('Accept', 'application/x-www-form-urlencoded')
-      .send(transformData(data))
-      .expect(404)
-      .end((err, resp) => {
-        if(err) return done(err);
-        const respObj = JSON.parse(resp.text);
-        expect(respObj, 'to have key', 'text');
-        done();
-      });
-  });
-
-  it('POST to / with slack data with no user specified returns 400 and msg', (done) => {
-    let data = clone(mockSlackPostData);
-    data.text = '';
-    request(baseUrl)
-      .post('/')
-      .set('Accept', 'application/x-www-form-urlencoded')
-      .send(transformData(mockSlackPostData))
-      .expect(400)
-      .end((err, resp) => {
-        if (err) return done(err);
-        const respObj = JSON.parse(resp.text);
-        expect(respObj, 'to have key', 'text');
-        done();
-      });
-  });
-
-  it('POST to / with user and specific paramter to fetch returns correctly', (done) => {
-    let data = clone(mockSlackPostData);
-    data.text = 'flatiron-school id';
-    request(baseUrl)
-      .post('/')
-      .set('Accept', 'application/x-www-form-urlencoded')
-      .send(transformData(data))
-      .expect(200)
-      .end((err, resp) => {
-        if (err) return done(err);
-        const respObj = JSON.parse(resp.text);
-        expect(respObj, 'to have key', 'text');
-        expect(respObj.text, 'to contain', '2180076');
-        done();
-      });
+app.post('/', (req, res) => {
+  if (!validRequest(req.body.token)) {
+    res.status(400).send();
+    return;
+  }
+  if (!req.body.text) {
+    res.status(400).send({
+      response_type: 'ephemeral',
+      text: "Please specify a user to find."
+    });
+    return;
+  }
+  const cmd = req.body.text.split(' '),
+        user = cmd[0],
+        paramToGet = cmd[1];
+  fetchGithubUser(user).then((resp) => {
+    const result = JSON.parse(resp);
+    res.send(prepareResponse(result, paramToGet));
+  }).catch((err) => {
+    let errMsg = { response_type: "ephemeral" };
+    if('statusCode' in err && err.statusCode == 404) {
+      errMsg.text = "Sorry. Unable to find that user.";
+      res.status(err.statusCode).send(errMsg);
+    }
+    else {
+      const status = err.statusCode ? err.statusCode : 500;
+      errMsg.text = "Oop! Something went wrong. Please try again.";
+      res.status(status).send(errMsg);
+    }
   });
 });
+
+// This code "exports" a function 'listen` that can be used to start
+// our server on the specified port.
+exports.listen = function(port, callback) {
+  callback = (typeof callback != 'undefined') ? callback : () => {
+    console.log('Listening on ' + port + '...');
+  };
+  app.listen(port, callback);
+};
